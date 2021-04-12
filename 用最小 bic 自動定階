@@ -1,0 +1,101 @@
+'''
+這個版本：
+一、先讀 yahoo finance 格式的個股 excel 資料，並將收盤價轉成小數點後一位
+二、設定此資料的時間 index 起：為此個股資料出現的最早日期
+    設定此資料的時間 index 訖：為此個股資料出現的最晚日期
+三、將個股日期、該日期對應的收盤價轉換成 panda serie
+四、這個版本可以將時間 index 用 .to_period() 轉換成按工作日：星期一至五來排，或按每天來排
+五、將 serie to data frame
+六、用 numpy .log() 加強資料的線性特徵，並差分平穩（因為這個股票序列在經濟領域中大部分都是不平穩的）
+七、在給定的範圍內用最小 bic 找到最佳模型階數（也可以選擇 aic 、 hqic 模式）
+八、將找到的最佳階數傳給模型，以 .predict(start,end) 預測
+九、傳給模型的資料應是差分平穩後的，如果傳的是非平穩的原始資料，那就是要讓模型去預測、產出一個不平穩的結果
+十、因為給模型的資料是差分平穩後趨近於零的序列，所以產出來的結果要還原回來，方法： .cumsum()
+'''
+import pandas as pd
+import tkinter as tk
+from tkinter import filedialog
+import numpy as np
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.arima_model import ARMA
+from statsmodels.tsa.arima_model import ARIMA
+import prettytable
+from datetime import datetime,timedelta,date,time
+import warnings
+warnings.filterwarnings('ignore')
+def table(table_name, table_rows):
+    table = prettytable.PrettyTable()
+    table.field_names = table_name
+    for i in table_rows:
+        table.add_row(i)
+    return table
+def adf(ts):
+    pvalue = adfuller(ts)[1]
+    table_name = ['pvalue']
+    table_rows = [[pvalue]]
+    adf_table = table(table_name, table_rows)
+    print (adf_table)
+    return pvalue
+def fit(ts):
+    maxc = float('inf')
+    maxr = int(len(ts)/10)
+    for temp in range(0,7):
+        for temq in range(0,7):
+            model = ARMA(ts,(temp,temq))
+            try:
+                # method 是條件平方和似然度最大化
+                result = model.fit(disp=-1, method='css')
+            except:
+                continue
+            finally:
+                a = result.aic
+                b = result.bic
+                c = result.hqic
+                criteria = b
+                if(criteria < maxc):
+                    maxc = criteria
+                    print(temp,temq,maxc)
+                    p = temp
+                    q = temq
+                    model_arma = result
+    print ('下述為最佳階數')
+    print (p,q)
+    return model_arma
+def train(model_arma,ts):
+    train_predict = model_arma.predict()
+    ts_data_new = ts[train_predict.index]
+    return ts
+def predict(model_arma,ts,start,end):
+    predict_ts = model_arma.predict(start=start, end=end)
+    return predict_ts
+def op():
+    try:
+        sfname = filedialog.askopenfilename(title='選擇 yahoo finance excel ', filetypes=[('Excel', '*.xlsx'), ('All Files', '*')])
+        df = pd.read_excel(sfname,index_col=0,header=0,parse_dates=True,squeeze=True)
+        ts = df['Close'].astype('float32')
+        ts.index = pd.DatetimeIndex(ts.index).to_period('D')
+        p = adf(ts)
+        if(p>0.05):
+            print('上述的 p value 顯示需要平穩')
+            tsd=ts.diff().dropna()
+            p2 = adf(tsd)
+            if(p2>0.05):
+                print('平穩化了還是不平穩，再平穩')
+            if(p2<0.05):
+                print('上述的 p value 顯示已平穩')
+        model = fit(tsd)
+        tst = train(model,np.log(tsd))
+        pre = predict(model,tst,ts.index.max()+timedelta(0),ts.index.max()+timedelta(62))
+        dfp = pd.DataFrame(pd.Series([ts[0]], index=[ts.index[0]]).append(pre).cumsum())
+        dfp = dfp.loc[ts.index.max()+timedelta(1):ts.index.max()+timedelta(62)]
+        dfp.columns = [str(62)+' 天左右的預測價格']
+        print(dfp)
+    except:
+        print("no open file")
+def main():
+    global root
+    root = tk.Tk()
+    b1 = tk.Button(root, text="打開 yahoo finance excel ",command = op).pack()
+    root.mainloop()
+if __name__=='__main__':
+    main()
